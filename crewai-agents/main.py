@@ -24,9 +24,12 @@ import sqlalchemy
 from sqlalchemy import create_engine, text
 
 # Vector store for knowledge persistence
-from llama_index.core import VectorStoreIndex, Document
+from llama_index.core import VectorStoreIndex, Document, Settings, StorageContext
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
+
+# Import enhanced file scraper
+from dscsa_file_scraper import scrape_page_with_files, prepare_documents_for_storage
 
 # LLM setup
 OLLAMA_URL = os.getenv("OLLAMA_API", "http://ollama:11434")
@@ -78,6 +81,68 @@ class WebScraperTool(BaseTool):
             return text
         except Exception as e:
             return f"Error scraping {url}: {str(e)}"
+
+class EnhancedWebScraperTool(BaseTool):
+    name: str = "Enhanced Web Scraper Tool"
+    description: str = "Scrapes content from websites including linked documents like PDFs"
+    
+    def _run(self, url: str) -> str:
+        try:
+            # Create temp directory for downloads
+            import tempfile
+            import os
+            output_dir = os.path.join(tempfile.gettempdir(), "dscsa_docs")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Scrape the page with document downloading
+            result = scrape_page_with_files(url, download_docs=True, output_dir=output_dir)
+            
+            # Prepare for storage
+            storage_docs = prepare_documents_for_storage([result])
+            
+            # Store in vector database
+            store_tool = StoreToKnowledgeBaseTool()
+            
+            # Store main page content
+            main_page_doc = storage_docs[0]
+            store_result = store_tool._run(
+                main_page_doc['text'],
+                {"source": main_page_doc['source'], "type": main_page_doc['type']}
+            )
+            
+            # Store each document's content
+            doc_count = 0
+            for doc in storage_docs[1:]:  # Skip the first one (main page)
+                if doc['type'] == 'dscsa_document':
+                    store_tool._run(
+                        doc['text'],
+                        {"source": doc['metadata']['url'], 
+                         "title": doc['metadata']['title'], 
+                         "type": "dscsa_document"}
+                    )
+                    doc_count += 1
+            
+            # Create summary
+            document_list = "\n".join([
+                f"- {doc['metadata'].get('title', 'Untitled')} ({doc['source']})"
+                for doc in storage_docs[1:] if doc['type'] == 'dscsa_document'
+            ])
+            
+            summary = f"""
+            Successfully scraped {url}
+            
+            Main page content stored in knowledge base.
+            
+            Found and processed {doc_count} documents from this page:
+            {document_list}
+            
+            All content has been added to the DSCSA knowledge base.
+            """
+            
+            return summary
+            
+        except Exception as e:
+            return f"Error with enhanced scraping of {url}: {str(e)}"
 
 class DatabaseQueryTool(BaseTool):
     name: str = "Database Query Tool"
@@ -133,7 +198,7 @@ class StoreToKnowledgeBaseTool(BaseTool):
             doc = Document(text=content, metadata=metadata)
             
             # Store document in vector database
-            from llama_index.core import Settings, StorageContext
+            from llama_index.core import Settings
             from llama_index.embeddings.ollama import OllamaEmbedding
             
             Settings.embed_model = OllamaEmbedding(model_name="mistral:latest", base_url=OLLAMA_URL)
@@ -170,7 +235,7 @@ dscsa_agent = Agent(
     complex compliance requirements in simple terms.""",
     verbose=True,
     allow_delegation=True,
-    tools=[WebScraperTool(), DSCSAKnowledgeSearchTool(), StoreToKnowledgeBaseTool()],
+    tools=[WebScraperTool(), EnhancedWebScraperTool(), DSCSAKnowledgeSearchTool(), StoreToKnowledgeBaseTool()],
     llm=llm
 )
 
@@ -180,6 +245,13 @@ def create_web_scraping_task(url: str):
     return Task(
         description=f"Scrape DSCSA compliance information from {url}, extract the most important facts about regulations, requirements, and deadlines, and store this knowledge in our database.",
         expected_output="A comprehensive summary of the DSCSA information found on the website, with key facts organized by category.",
+        agent=dscsa_agent
+    )
+
+def create_enhanced_scraping_task(url: str):
+    return Task(
+        description=f"Scrape DSCSA compliance information from {url} including any linked documents like PDFs. Extract the most important facts about regulations, requirements, and deadlines from both the web page and its linked documents, and store all this knowledge in our database.",
+        expected_output="A comprehensive summary of all DSCSA information found on the website and its linked documents, with key facts organized by category.",
         agent=dscsa_agent
     )
 
@@ -228,6 +300,25 @@ async def scrape_dscsa(request: Request):
     )
     
     return {"result": result, "storage": storage_result}
+
+@app.post("/scrape-dscsa-with-docs")
+async def scrape_dscsa_with_docs(request: Request):
+    body = await request.json()
+    url = body.get("url")
+    
+    if not url:
+        return JSONResponse(content={"error": "URL is required"}, status_code=400)
+    
+    task = create_enhanced_scraping_task(url)
+    crew = Crew(
+        agents=[dscsa_agent],
+        tasks=[task],
+        process=Process.sequential,
+        verbose=True
+    )
+    
+    result = crew.kickoff()
+    return {"result": result}
 
 @app.post("/analyze-database")
 async def analyze_database(request: Request):

@@ -11,7 +11,12 @@ sqlalchemy
 psycopg2-binary
 pymysql
 chromadb
-unstructured
+unstructured[all]
 openai
 llama-index
 pydantic
+python-docx
+python-pptx
+openpyxl
+pymupdf
+tabulate
