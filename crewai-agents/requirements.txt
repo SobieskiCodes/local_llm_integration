@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+langchain
+crewai
+requests
+beautifulsoup4
+selenium
+webdriver-manager
+pandas
+sqlalchemy
+psycopg2-binary
+pymysql
+chromadb
+unstructured
+openai
+llama-index
+pydantic

@@ -37,23 +37,6 @@ services:
       - ollama
     restart: unless-stopped
 
-  # bolt:
-  #   build:
-  #     context: ./bolt
-  #     dockerfile: Dockerfile
-  #     target: bolt-ai-development
-  #   container_name: bolt
-  #   working_dir: /app
-  #   volumes:
-  #     - shared_app:/app
-  #   ports:
-  #     - "5173:5173"
-  #   profiles:
-  #     - development
-  #   environment:
-  #     - HOST=0.0.0.0
-  #   restart: unless-stopped
-
   llamaindex:
     build:
       context: ./llamaindex
@@ -61,7 +44,7 @@ services:
     container_name: llamaindex
     working_dir: /app
     volumes:
-      - ./llamaindex:/app  # ✅ contains main.py and is your real project source
+      - ./llamaindex:/app
     ports:
       - "8081:8081"
     environment:
@@ -82,6 +65,26 @@ services:
     depends_on:
       - llamaindex
       - ollama
+    restart: unless-stopped
+
+  crewai-agents:
+    build:
+      context: ./crewai-agents
+      dockerfile: Dockerfile
+    container_name: crewai-agents
+    ports:
+      - "8083:8083"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_API=http://ollama:11434
+      # Add your database connection settings here if needed
+      # - DATABASE_URL=postgresql://user:password@host:port/dbname
+    volumes:
+      - ./crewai-agents:/app
+    depends_on:
+      - qdrant
+      - ollama
+      - llamaindex
     restart: unless-stopped
 
 
