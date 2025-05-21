@@ -17,11 +17,21 @@ from typing import List, Dict, Any, Optional
 
 # List of common DSCSA-related websites
 DSCSA_SOURCES = [
-    "https://www.fda.gov/drugs/drug-supply-chain-security-act-dscsa",
-    "https://www.hda.org/issues/pharmaceutical-traceability",
+    # DSCSA compliance sources
+    "https://www.fda.gov/drugs/drug-supply-chain-integrity/drug-supply-chain-security-act-dscsa",
+    "https://www.hda.org/pharmaceutical-traceability-hub",
     "https://www.gs1us.org/industries-and-insights/by-industry/healthcare/standards-in-use/pharmaceutical",
-    "https://www.pharmaceutical-technology.com/comment/track-and-trace-pharma",
-    "https://www.cdfa.ca.gov/PDCP/Drug_Supply_Chain_Security_Act.html"
+    "https://www.cdc.gov/vaccines/programs/vtrcks/awardees/dscsa.html",
+    "https://www.pharmacist.com/Practice/DSCSA",
+    "https://www.lsps.com/blog/dscsa-pharmaceutical-serialization-requirements-2023/",
+    
+    # EPCIS-specific sources
+    "https://www.gs1.org/standards/epcis",
+    "https://www.gs1us.org/industries-and-insights/by-industry/healthcare/standards-in-use/epcis",
+    "https://www.tracelink.com/solutions/healthcare/epcis-data-exchange",
+    "https://www.c4scs.org/epcis-for-dscsa-with-help-videos/",
+    "https://www.rxtrace.com/category/epcis/",
+    "https://www.lsps.com/services-pharmaceutical-serialization/epcis/"
 ]
 
 def setup_selenium_driver():
