@@ -5,6 +5,12 @@ services:
     build:
       context: .
       dockerfile: ollama.Dockerfile
+    deploy:
+     resources:
+       reservations:
+         devices:
+           - driver: nvidia
+             capabilities: [compute, utility]
     container_name: ollama
     ports:
       - "11434:11434"
@@ -22,20 +28,30 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  openwebui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: openwebui
+
+  librechat:
+    image: ghcr.io/danny-avila/librechat:latest
+    container_name: librechat
     ports:
-      - "3000:8080"
+      - "3100:3080"
+    env_file:
+      - .env
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - HOST=0.0.0.0
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
-    depends_on:
-      - ollama
+      - MONGO_URI=mongodb://mongo:27017/librechat
+    volumes:
+      - ./librechat/librechat.yaml:/app/librechat.yaml:ro
+      - librechat_data:/app/librechat
     restart: unless-stopped
+
+  mongo:
+    image: mongo
+    container_name: librechat-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - librechat_mongo_data:/data/db
+
 
   # bolt:
   #   build:
@@ -84,8 +100,11 @@ services:
       - ollama
     restart: unless-stopped
 
-
 volumes:
   ollama:
   qdrant_data:
   shared_app:
+  librechat_data:
+  librechat_mongo_data:
+
+
