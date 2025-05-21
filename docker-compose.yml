@@ -29,21 +29,63 @@ services:
       - "3000:8080"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+      - HOST=0.0.0.0
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     depends_on:
       - ollama
     restart: unless-stopped
 
-  bolt:
-    image: node:20-alpine
-    container_name: bolt
+  # bolt:
+  #   build:
+  #     context: ./bolt
+  #     dockerfile: Dockerfile
+  #     target: bolt-ai-development
+  #   container_name: bolt
+  #   working_dir: /app
+  #   volumes:
+  #     - shared_app:/app
+  #   ports:
+  #     - "5173:5173"
+  #   profiles:
+  #     - development
+  #   environment:
+  #     - HOST=0.0.0.0
+  #   restart: unless-stopped
+
+  llamaindex:
+    build:
+      context: ./llamaindex
+      dockerfile: Dockerfile
+    container_name: llamaindex
     working_dir: /app
     volumes:
-      - ./bolt.diy:/app
+      - ./llamaindex:/app  # ✅ contains main.py and is your real project source
     ports:
-      - "5173:5173"
-    command: sh -c "npm install -g pnpm && pnpm install && pnpm run dev"
+      - "8081:8081"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - OLLAMA_API=http://ollama:11434
+    depends_on:
+      - qdrant
+      - ollama
     restart: unless-stopped
+
+  langchain:
+    build:
+      context: ./langchain-agent
+      dockerfile: Dockerfile
+    container_name: langchain
+    ports:
+      - "8082:8082"
+    depends_on:
+      - llamaindex
+      - ollama
+    restart: unless-stopped
+
 
 volumes:
   ollama:
   qdrant_data:
+  shared_app:

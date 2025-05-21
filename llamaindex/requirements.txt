@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+llama-index==0.10.28
+llama-index-llms-ollama
+llama-index-vector-stores-qdrant
+llama-index-embeddings-ollama
+qdrant-client
