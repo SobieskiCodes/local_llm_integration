@@ -39,7 +39,6 @@ services:
     environment:
       - MONGO_URI=mongodb://mongo:27017/librechat
     volumes:
-      - ./librechat/librechat.yaml:/app/librechat.yaml:ro
       - librechat_data:/app/librechat
     restart: unless-stopped
 
@@ -52,23 +51,6 @@ services:
     volumes:
       - librechat_mongo_data:/data/db
 
-
-  # bolt:
-  #   build:
-  #     context: ./bolt
-  #     dockerfile: Dockerfile
-  #     target: bolt-ai-development
-  #   container_name: bolt
-  #   working_dir: /app
-  #   volumes:
-  #     - shared_app:/app
-  #   ports:
-  #     - "5173:5173"
-  #   profiles:
-  #     - development
-  #   environment:
-  #     - HOST=0.0.0.0
-  #   restart: unless-stopped
 
   llamaindex:
     build:

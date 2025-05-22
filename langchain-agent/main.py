@@ -4,6 +4,7 @@ import httpx
 import json
 import datetime
 import requests
+import re
 
 app = FastAPI()
 
@@ -18,6 +19,18 @@ def format_chat_history(messages):
         elif role == "assistant":
             history.append(f"ASSISTANT: {content}")
     return "\n".join(history)
+
+def analyze_response_for_annotation(full_text: str):
+    flat_text = full_text.replace("\n", " ").replace("  ", " ")
+    matches = re.findall(r"\|\s*[^|]+\s*\|.*\|", flat_text)
+    if len(matches) >= 2:
+        print("🔍 Table-like pattern detected.")
+        return {
+            "type": "annotation",
+            "action": "offer_csv",
+            "message": "💡 This looks like a table. Would you like to export it as a CSV?"
+        }
+    return None
 
 # === POST /api/chat ===
 @app.post("/api/chat")
@@ -40,7 +53,7 @@ async def chat(request: Request):
 
         if stream:
             async def proxy_stream():
-                first_chunk = True
+                full_response = []
                 try:
                     async with httpx.AsyncClient(timeout=None) as client:
                         async with client.stream(
@@ -57,13 +70,34 @@ async def chat(request: Request):
 
                                 if raw == "[DONE]":
                                     print("✅ Reached [DONE] marker")
+                                    full_text = "".join(full_response)
+                                    print("📦 Final full_response content:\n", full_text)
+                                    appended = detect_and_offer_csv(full_text)
+                                    extra = appended[len(full_text):]
+                                    if extra:
+                                        print("📎 Appending CSV suggestion to stream...")
+                                        yield json.dumps({
+                                            "id": "stream",
+                                            "object": "chat.completion.chunk",
+                                            "choices": [{
+                                                "delta": {"content": extra},
+                                                "index": 0,
+                                                "finish_reason": None
+                                            }]
+                                        }) + "\n\n"
                                     yield "data: [DONE]\n\n"
                                     break
 
                                 try:
                                     parsed = json.loads(raw)
-                                    token = parsed.get("message", {}).get("content", "")
+                                    token = ""
+                                    if "message" in parsed and "content" in parsed["message"]:
+                                        token = parsed["message"]["content"]
+                                    elif "choices" in parsed and "delta" in parsed["choices"][0] and "content" in parsed["choices"][0]["delta"]:
+                                        token = parsed["choices"][0]["delta"]["content"]
+
                                     if token:
+                                        full_response.append(token)
                                         chunk = {
                                             "id": "stream",
                                             "object": "chat.completion.chunk",
@@ -73,7 +107,6 @@ async def chat(request: Request):
                                                 "finish_reason": None
                                             }]
                                         }
-                                        print("⬅️  sending chunk:", token)
                                         yield f"data: {json.dumps(chunk)}\n\n"
                                 except Exception as e:
                                     print("Stream parse error:", e)
@@ -82,7 +115,6 @@ async def chat(request: Request):
 
             return StreamingResponse(proxy_stream(), media_type="text/event-stream")
 
-        # === Non-streaming fallback ===
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "http://ollama:11434/api/chat",
@@ -103,7 +135,7 @@ async def chat(request: Request):
                 print("Unexpected response format from Ollama:", data)
                 raise HTTPException(status_code=502, detail="Invalid format from LLM")
 
-            output_text = data["message"].get("content", "")
+            output_text = detect_and_offer_csv(data["message"].get("content", ""))
 
             return {
                 "id": "chatcmpl-001",
@@ -174,8 +206,33 @@ async def openai_chat(request: Request):
         print("Parse error:", str(e))
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+# 🧪 OpenAI-compatible chat completion endpoint
+@app.post("/v1/chat/completions")
+async def openai_chat(request: Request):
+    body = await request.json()
+    messages = body.get("messages", [])
+    input_text = messages[-1]["content"] if messages else ""
+    result = agent_executor.run(input_text)
+    return {
+        "id": "chatcmpl-001",
+        "object": "chat.completion",
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": result
+            },
+            "finish_reason": "stop",
+            "index": 0
+        }],
+        "model": "mistral:latest",
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0
+        }
+    }
 
-# === GET /api/tags ===
+# 🔧 Debug tag passthrough
 @app.get("/api/tags")
 async def proxy_tags():
     try:
@@ -183,13 +240,8 @@ async def proxy_tags():
         res.raise_for_status()
         return JSONResponse(content=res.json())
     except Exception as e:
-        print("/api/tags error:", e)
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
-# === GET /api/version ===
 @app.get("/api/version")
 def api_version():
-    return {
-        "version": "0.9.0-debug",
-        "component": "Streaming Ollama Proxy with Enhanced Debug Logging"
-    }
+    return {"version": "0.3.1", "component": "LangChain agent with structured function calling"}
