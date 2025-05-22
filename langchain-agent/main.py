@@ -12,8 +12,12 @@ import time
 import logging
 
 # === Logging setup ===
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("main")
 
 # === FastAPI app ===
 app = FastAPI()
@@ -49,19 +53,19 @@ react_agent = initialize_agent(
     llm=llm,
     agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
     handle_parsing_errors=True,
-    verbose=True  # ✅ Enable verbose logging for full agent steps
+    verbose=True
 )
 
 # === LangGraph node
 async def agent_node(state: AgentState) -> AgentState:
     input_text = state["input"]
-    print(f"[agent_node] Running agent on: {input_text}")
+    logger.info(f"[agent_node] Running agent on input: {input_text}")
     try:
         result = await react_agent.ainvoke(input_text)
-        print(f"[agent_node] Raw agent result: {result}")
+        logger.info(f"[agent_node] Raw agent result: {result}")
         return {"input": input_text, "output": result}
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("[agent_node] Agent execution error")
         return {"input": input_text, "output": f"Agent error: {str(e)}"}
 
 # === LangGraph setup
@@ -76,7 +80,7 @@ graph = workflow.compile()
 async def chat_handler(request: Request):
     try:
         body = await request.json()
-        print("[chat_handler] Received body:", json.dumps(body))
+        logger.info("[chat_handler] Received body: %s", json.dumps(body))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON format")
 
@@ -89,7 +93,7 @@ async def chat_handler(request: Request):
 
     try:
         result = await graph.ainvoke(input_data)
-        print("[chat_handler] Raw graph result:", json.dumps(result, indent=2))
+        logger.info("[chat_handler] Raw graph result: %s", json.dumps(result, indent=2))
 
         raw_output = result.get("output", "")
         if isinstance(raw_output, dict):
@@ -97,9 +101,9 @@ async def chat_handler(request: Request):
         else:
             content = str(raw_output) or "Sorry, I couldn't generate a response."
 
-        print("[chat_handler] Final content:", content)
+        logger.info("[chat_handler] Final content: %s", content)
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("[chat_handler] Error during processing")
         content = f"Agent error: {str(e)}"
 
     # === Simulate OpenAI-style streaming
