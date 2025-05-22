@@ -2,5 +2,7 @@ fastapi
 uvicorn
 langchain>=0.1.17
 langchain-ollama
+langchain_community
+langgraph
 requests
 openai

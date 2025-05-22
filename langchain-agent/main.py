@@ -1,126 +1,153 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
-from langchain.agents import Tool, initialize_agent, AgentType
+from fastapi.responses import StreamingResponse, JSONResponse
 from langchain_ollama import ChatOllama
-from langchain_core.runnables import RunnableLambda
-import asyncio
+from langchain.agents import Tool, initialize_agent, AgentType
+from langgraph.graph import StateGraph, END
+from typing import TypedDict
 import json
+import asyncio
 import traceback
+import uuid
+import time
+import logging
 
+# === Logging setup ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# === FastAPI app ===
 app = FastAPI()
 
-# === Ollama LLM Setup ===
+# === LLM setup ===
 llm = ChatOllama(
     model="mistral",
     base_url="http://ollama:11434",
     temperature=0.7
 )
 
-# === Debug-Wrapped LLM using RunnableLambda ===
-def log_and_invoke(prompt, **kwargs):
-    print("🟢 [SYNC] Prompt Sent:", prompt)
-    return llm.invoke(prompt, **kwargs)
+# === Minimal dummy tool to satisfy LangChain
 
-async def log_and_ainvoke(prompt, **kwargs):
-    print("🟢 [ASYNC] Prompt Sent:", prompt)
-    return await llm.ainvoke(prompt, **kwargs)
+def noop_tool(_):
+    return "This tool is not in use."
 
-debug_llm = RunnableLambda(func=log_and_invoke, afunc=log_and_ainvoke)
+tools = [
+    Tool(
+        name="NoopTool",
+        func=noop_tool,
+        description="This tool does nothing and exists only to initialize the agent."
+    )
+]
 
-# === Tool: Table to CSV (debug-enabled) ===
-def export_table_to_csv(text: str) -> str:
-    print("🛠 Tool input:\n", text)
-    if "|" in text:
-        return (
-            "🔍 I detected tabular content.\n"
-            "Would you like to turn this into a downloadable CSV file?\n"
-            "If yes, I’ll forward it to our internal CSV tool. (Currently under construction.)"
-        )
-    return "No table format (|) found — skipping CSV generation."
+# === State typing ===
+class AgentState(TypedDict):
+    input: str
+    output: str
 
-csv_tool = Tool(
-    name="export_table_to_csv",
-    func=export_table_to_csv,
-    description="Use when input contains tables (pipe-formatted like | col1 | col2 |)."
+# === Initialize ReAct agent with dummy tool
+react_agent = initialize_agent(
+    tools=tools,
+    llm=llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+    handle_parsing_errors=True,
+    verbose=True  # ✅ Enable verbose logging for full agent steps
 )
 
-# === LangChain AgentExecutor ===
-agent_executor = initialize_agent(
-    tools=[csv_tool],
-    llm=debug_llm,
-    agent_type=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    verbose=True,
-    handle_parsing_errors=True
-)
+# === LangGraph node
+async def agent_node(state: AgentState) -> AgentState:
+    input_text = state["input"]
+    print(f"[agent_node] Running agent on: {input_text}")
+    try:
+        result = await react_agent.ainvoke(input_text)
+        print(f"[agent_node] Raw agent result: {result}")
+        return {"input": input_text, "output": result}
+    except Exception as e:
+        traceback.print_exc()
+        return {"input": input_text, "output": f"Agent error: {str(e)}"}
 
-# === OpenAI-compatible Output Format ===
-def format_response(content: str):
-    return {
-        "id": "chatcmpl-custom",
-        "object": "chat.completion",
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": content}
-        }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    }
+# === LangGraph setup
+workflow = StateGraph(AgentState)
+workflow.add_node("agent_node", agent_node)
+workflow.set_entry_point("agent_node")
+workflow.add_edge("agent_node", END)
+graph = workflow.compile()
 
-# === FastAPI Chat Endpoint for LibreChat ===
+# === FastAPI endpoint for LibreChat
 @app.post("/v1/chat/completions")
 async def chat_handler(request: Request):
     try:
         body = await request.json()
-    except Exception as e:
-        print(f"❌ JSON parse error: {e}")
+        print("[chat_handler] Received body:", json.dumps(body))
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON format")
 
-    print("\n=== Incoming Request ===")
-    print(json.dumps(body, indent=2))
-    print("========================")
-
     messages = body.get("messages", [])
-    stream = body.get("stream", False)
-
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="Missing or invalid 'messages'")
 
     user_prompt = messages[-1].get("content", "")
-    print(f"📦 Prompt: {user_prompt} | stream={stream}")
+    input_data = {"input": user_prompt}
 
-    # === Streaming Response Mode ===
-    if stream:
-        async def token_stream():
-            try:
-                async for step in agent_executor.astream({"input": user_prompt}):
-                    content = step.get("output", "")
-                    if content:
-                        payload = {
-                            "id": "chatcmpl-stream",
-                            "object": "chat.completion.chunk",
-                            "choices": [{
-                                "delta": {"content": content},
-                                "index": 0,
-                                "finish_reason": None
-                            }]
-                        }
-                        yield f"data: {json.dumps(payload)}\n\n"
-                        await asyncio.sleep(0.01)
-                yield "data: [DONE]\n\n"
-            except Exception as e:
-                print("🔥 Streaming exception:", e)
-                traceback.print_exc()
-                yield f"data: [ERROR] {str(e)}\n\n"
-                yield "data: [DONE]\n\n"
-
-        return StreamingResponse(token_stream(), media_type="text/event-stream")
-
-    # === Non-streaming Response Mode ===
     try:
-        result = await agent_executor.ainvoke({"input": user_prompt})
-        content = result.get("output", result)
-    except Exception as e:
-        print("🔥 Non-stream error:", e)
-        traceback.print_exc()
-        content = f"⚠️ Agent error: {str(e)}"
+        result = await graph.ainvoke(input_data)
+        print("[chat_handler] Raw graph result:", json.dumps(result, indent=2))
 
-    return JSONResponse(content=format_response(content))
+        raw_output = result.get("output", "")
+        if isinstance(raw_output, dict):
+            content = raw_output.get("output", json.dumps(raw_output))
+        else:
+            content = str(raw_output) or "Sorry, I couldn't generate a response."
+
+        print("[chat_handler] Final content:", content)
+    except Exception as e:
+        traceback.print_exc()
+        content = f"Agent error: {str(e)}"
+
+    # === Simulate OpenAI-style streaming
+    async def token_stream():
+        resp_id = f"chatcmpl-{uuid.uuid4().hex}"
+        model_name = "mistral"
+        created_time = int(time.time())
+
+        first_chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model_name,
+            "choices": [{
+                "delta": {"role": "assistant"},
+                "index": 0,
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(first_chunk)}\n\n"
+
+        for i, word in enumerate(content.split()):
+            chunk = {
+                "id": resp_id,
+                "object": "chat.completion.chunk",
+                "created": created_time,
+                "model": model_name,
+                "choices": [{
+                    "delta": {"content": " " + word if i else word},
+                    "index": 0,
+                    "finish_reason": None
+                }]
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            await asyncio.sleep(0.01)
+
+        final_chunk = {
+            "id": resp_id,
+            "object": "chat.completion.chunk",
+            "created": created_time,
+            "model": model_name,
+            "choices": [{
+                "delta": {},
+                "index": 0,
+                "finish_reason": "stop"
+            }]
+        }
+        yield f"data: {json.dumps(final_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(token_stream(), media_type="text/event-stream")
