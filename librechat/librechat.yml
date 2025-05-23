@@ -2,27 +2,27 @@ version: 1.0.8
 
 endpoints:
   custom:
-    # ── Ollama direct (unchanged) ────────────────────────────
+    # ── Ollama (unchanged) ───────────────────────────
     - name: "Ollama"
       apiKey: "ollama"
       baseURL: "http://ollama:11434/v1"
       models:
-        default: ["mistral"]   # fallback if /tags fails
-        fetch:   true          # Ollama exposes its own model list
+        default: ["mistral"]
+        fetch:   true
       titleConvo: true
       titleModel: "current_model"
       summarize:  false
       modelDisplayLabel: "Ollama"
 
-    # ── LangGraph proxy (one provider, many models) ─────────
+    # ── LangGraph proxy ──────────────────────────────
     - name: "LangGraph"
-      apiKey: "proxy"                # dummy; proxy ignores it
-      baseURL: "http://langchain:8082"   # LibreChat will append /v1/…
-      directEndpoint: false
+      apiKey: "proxy"
+      baseURL: "http://langchain:8082/v1"   # ← add /v1
+      directEndpoint: false                # let LC add /models & /chat/completions
 
       models:
-        default: ["openchat"]        # placeholder (required field)
-        fetch:   true                # LibreChat 👉 GET /v1/models
+        default: ["openchat"]              # placeholder
+        fetch:   true                      # LibreChat → GET /v1/models
 
       titleConvo: true
       titleModel: "current_model"

@@ -13,7 +13,8 @@ from langchain_ollama import ChatOllama
 from langchain.agents.react.agent import create_react_agent
 from langchain.agents import AgentExecutor
 from langchain_core.tools import tool
-from langchain.callbacks.stdout import StreamingStdOutCallbackHandler
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+
 from langchain import hub
 
 # ───────────── 0.  ENV & LOGGING ────────────────────────────────────────
