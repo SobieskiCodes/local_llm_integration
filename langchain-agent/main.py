@@ -1,157 +1,133 @@
+# main.py  ────────────────────────────────────────────────────────────────
+import os, asyncio, json, uuid, logging
+from typing import List, Dict, Any
+
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+
 from langchain_ollama import ChatOllama
-from langchain.agents import Tool, initialize_agent, AgentType
-from langgraph.graph import StateGraph, END
-from typing import TypedDict
-import json
-import asyncio
-import traceback
-import uuid
-import time
-import logging
+from langchain.agents.react.agent import create_react_agent
+from langchain.agents import AgentExecutor
+from langchain_core.tools import tool
+from langchain import hub
 
-# === Logging setup ===
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
-logger = logging.getLogger("main")
+# ───────────────────── 0.  GLOBAL ENV / LOGGING ─────────────────────────
+# Kill the noisy LangSmith banner
+os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
-# === FastAPI app ===
-app = FastAPI()
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("gateway")
 
-# === LLM setup ===
-llm = ChatOllama(
-    model="mistral",
-    base_url="http://ollama:11434",
-    temperature=0.7
-)
+# ───────────────────── 1.  TOOL DEFINITION ──────────────────────────────
+@tool
+def get_weather(location: str) -> str:
+    """Return a (fake) weather report for the given location."""
+    return f"It's always sunny in {location}."
 
-# === Minimal dummy tool to satisfy LangChain
+# ───────────────────── 2.  MODEL + AGENT SETUP ───────────────────────────
+OLLAMA_BASE  = "http://ollama:11434"   # change if host/port differ
+OLLAMA_MODEL = "openchat"              # e.g.  'openchat:7b-v3.5'
 
-def noop_tool(_):
-    return "This tool is not in use."
+llm    = ChatOllama(base_url=OLLAMA_BASE, model=OLLAMA_MODEL)
+prompt = hub.pull("hwchase17/react")   # canonical ReAct prompt
 
-tools = [
-    Tool(
-        name="NoopTool",
-        func=noop_tool,
-        description="This tool does nothing and exists only to initialize the agent."
-    )
-]
+agent_runnable = create_react_agent(llm, [get_weather], prompt)
 
-# === State typing ===
-class AgentState(TypedDict):
-    input: str
-    output: str
-
-# === Initialize ReAct agent with dummy tool
-react_agent = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
-    handle_parsing_errors=True,
-    verbose=True
+agent = AgentExecutor(
+    agent=agent_runnable,
+    tools=[get_weather],
+    verbose=True,                 # prints internal chain steps to console
+    handle_parsing_errors=True,   # retry on bad-format output
+    max_iterations=3
 )
 
-# === LangGraph node
-async def agent_node(state: AgentState) -> AgentState:
-    input_text = state["input"]
-    logger.info(f"[agent_node] Running agent on input: {input_text}")
+# ───────────────────── 3.  FASTAPI SERVICE ───────────────────────────────
+app = FastAPI(title="Ollama-ReAct gateway")
+
+def _format_openai_response(answer: str) -> Dict[str, Any]:
+    """Wrap text in OpenAI-style JSON structure expected by LibreChat."""
+    return {
+        "id": f"chatcmpl-{uuid.uuid4()}",
+        "object": "chat.completion",
+        "model": OLLAMA_MODEL,
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": answer },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+    }
+
+def run_agent(user_input: str) -> str:
+    """
+    Invoke the agent with retries; fall back to raw LLM reply
+    if parsing still fails after AgentExecutor’s automatic retries.
+    """
     try:
-        result = await react_agent.ainvoke(input_text)
-        logger.info(f"[agent_node] Raw agent result: {result}")
-        return {"input": input_text, "output": result}
+        out = agent.invoke({"input": user_input})
+        return out["output"] if isinstance(out, dict) else str(out)
     except Exception as e:
-        logger.exception("[agent_node] Agent execution error")
-        return {"input": input_text, "output": f"Agent error: {str(e)}"}
+        logger.exception("❌ Agent failed – falling back to raw LLM. Reason: %s", e)
+        raw = llm.invoke(user_input)
+        return (
+            "⚠️ _Agent formatting failed – showing raw LLM reply_\n\n"
+            + (getattr(raw, "content", str(raw)))
+        )
 
-# === LangGraph setup
-workflow = StateGraph(AgentState)
-workflow.add_node("agent_node", agent_node)
-workflow.set_entry_point("agent_node")
-workflow.add_edge("agent_node", END)
-graph = workflow.compile()
-
-# === FastAPI endpoint for LibreChat
 @app.post("/v1/chat/completions")
-async def chat_handler(request: Request):
-    try:
-        body = await request.json()
-        logger.info("[chat_handler] Received body: %s", json.dumps(body))
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON format")
+async def chat_completions(req: Request):
+    body = await req.json()
+    msgs: List[Dict[str, str]] = body.get("messages", [])
+    if not msgs:
+        raise HTTPException(400, "Missing 'messages' array")
 
-    messages = body.get("messages", [])
-    if not isinstance(messages, list) or not messages:
-        raise HTTPException(status_code=400, detail="Missing or invalid 'messages'")
+    # LibreChat sends the whole convo; grab the newest user turn
+    user_input = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
+    if not user_input:
+        raise HTTPException(400, "No user message found")
 
-    user_prompt = messages[-1].get("content", "")
-    input_data = {"input": user_prompt}
+    stream = bool(body.get("stream", False))
 
-    try:
-        result = await graph.ainvoke(input_data)
-        logger.info("[chat_handler] Raw graph result: %s", json.dumps(result, indent=2))
+    if not stream:
+        answer_text = run_agent(user_input)
+        return JSONResponse(_format_openai_response(answer_text))
 
-        raw_output = result.get("output", "")
-        if isinstance(raw_output, dict):
-            content = raw_output.get("output", json.dumps(raw_output))
-        else:
-            content = str(raw_output) or "Sorry, I couldn't generate a response."
-
-        logger.info("[chat_handler] Final content: %s", content)
-    except Exception as e:
-        logger.exception("[chat_handler] Error during processing")
-        content = f"Agent error: {str(e)}"
-
-    # === Simulate OpenAI-style streaming
-    async def token_stream():
-        resp_id = f"chatcmpl-{uuid.uuid4().hex}"
-        model_name = "mistral"
-        created_time = int(time.time())
-
-        first_chunk = {
-            "id": resp_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model_name,
-            "choices": [{
-                "delta": {"role": "assistant"},
-                "index": 0,
-                "finish_reason": None
-            }]
-        }
-        yield f"data: {json.dumps(first_chunk)}\n\n"
-
-        for i, word in enumerate(content.split()):
+    # ───── streaming branch (Server-Sent Events) ──────────────────────
+    async def event_stream():
+        txt = run_agent(user_input)
+        for token in txt.split():
             chunk = {
-                "id": resp_id,
+                "id": None,
                 "object": "chat.completion.chunk",
-                "created": created_time,
-                "model": model_name,
+                "model": OLLAMA_MODEL,
                 "choices": [{
-                    "delta": {"content": " " + word if i else word},
                     "index": 0,
+                    "delta": { "content": token + " " },
                     "finish_reason": None
                 }]
             }
             yield f"data: {json.dumps(chunk)}\n\n"
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
 
-        final_chunk = {
-            "id": resp_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model_name,
-            "choices": [{
-                "delta": {},
-                "index": 0,
-                "finish_reason": "stop"
-            }]
-        }
-        yield f"data: {json.dumps(final_chunk)}\n\n"
+        # final stop chunk
+        yield (
+            "data: "
+            + json.dumps({
+                "id": None,
+                "object": "chat.completion.chunk",
+                "model": OLLAMA_MODEL,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop"
+                }]
+            })
+            + "\n\n"
+        )
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(token_stream(), media_type="text/event-stream")
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
