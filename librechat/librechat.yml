@@ -2,41 +2,29 @@ version: 1.0.8
 
 endpoints:
   custom:
+    # ── Ollama direct (unchanged) ────────────────────────────
     - name: "Ollama"
-      apiKey: "ollama"  # dummy value; LibreChat requires it
+      apiKey: "ollama"
       baseURL: "http://ollama:11434/v1"
       models:
-        default: ["mistral"]
-        fetch: true
+        default: ["mistral"]   # fallback if /tags fails
+        fetch:   true          # Ollama exposes its own model list
       titleConvo: true
-      titleModel: "mistral"
-      summarize: false
-      summaryModel: "mistral"
-      forcePrompt: false
+      titleModel: "current_model"
+      summarize:  false
       modelDisplayLabel: "Ollama"
 
-    - name: "LangGraph OpenChat"
-      apiKey: "proxy"  # dummy value
-      baseURL: "http://langchain:8082/v1"
-      models:
-        default: ["openchat"]
-        fetch: false
-      titleConvo: true
-      titleModel: "LangGraph OpenChat"
-      summarize: false
-      summaryModel: "LangGraph OpenChat base agent test"
-      forcePrompt: false
-      modelDisplayLabel: "LangGraph"
+    # ── LangGraph proxy (one provider, many models) ─────────
+    - name: "LangGraph"
+      apiKey: "proxy"                # dummy; proxy ignores it
+      baseURL: "http://langchain:8082"   # LibreChat will append /v1/…
+      directEndpoint: false
 
-    - name: "LangGraph Mistral"
-      apiKey: "proxy"  # dummy value
-      baseURL: "http://langchain:8082/v1"
       models:
-        default: ["mistral"]
-        fetch: false
+        default: ["openchat"]        # placeholder (required field)
+        fetch:   true                # LibreChat 👉 GET /v1/models
+
       titleConvo: true
-      titleModel: "LangGraph Mistral"
-      summarize: false
-      summaryModel: "LangGraph Mistral base agent test"
-      forcePrompt: false
+      titleModel: "current_model"
+      summarize:  false
       modelDisplayLabel: "LangGraph"

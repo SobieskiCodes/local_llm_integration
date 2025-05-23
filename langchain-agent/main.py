@@ -1,4 +1,8 @@
-# main.py  ────────────────────────────────────────────────────────────────
+"""
+FastAPI → LangGraph ReAct Agent → Ollama (openchat)
+Console-first edition: full live chain output
+"""
+
 import os, asyncio, json, uuid, logging
 from typing import List, Dict, Any
 
@@ -9,107 +13,114 @@ from langchain_ollama import ChatOllama
 from langchain.agents.react.agent import create_react_agent
 from langchain.agents import AgentExecutor
 from langchain_core.tools import tool
+from langchain.callbacks.stdout import StreamingStdOutCallbackHandler
 from langchain import hub
 
-# ───────────────────── 0.  GLOBAL ENV / LOGGING ─────────────────────────
-# Kill the noisy LangSmith banner
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
+# ───────────── 0.  ENV & LOGGING ────────────────────────────────────────
+os.environ["LANGCHAIN_TRACING_V2"] = "false"   # silence LangSmith banner
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("gateway")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s"
+)
+root_log = logging.getLogger()
+root_log.setLevel(logging.INFO)
 
-# ───────────────────── 1.  TOOL DEFINITION ──────────────────────────────
+# ───────────── 1.  TOOL EXAMPLE ─────────────────────────────────────────
 @tool
 def get_weather(location: str) -> str:
     """Return a (fake) weather report for the given location."""
     return f"It's always sunny in {location}."
 
-# ───────────────────── 2.  MODEL + AGENT SETUP ───────────────────────────
-OLLAMA_BASE  = "http://ollama:11434"   # change if host/port differ
-OLLAMA_MODEL = "openchat"              # e.g.  'openchat:7b-v3.5'
+# ───────────── 2.  MODEL & AGENT SETUP ──────────────────────────────────
+OLLAMA_BASE  = "http://ollama:11434"
+OLLAMA_MODEL = "openchat"          # change to openchat:7b-v3.5 etc.
 
-llm    = ChatOllama(base_url=OLLAMA_BASE, model=OLLAMA_MODEL)
-prompt = hub.pull("hwchase17/react")   # canonical ReAct prompt
+llm    = ChatOllama(base_url=OLLAMA_BASE, model=OLLAMA_MODEL, verbose=True)
+prompt = hub.pull("hwchase17/react")
 
 agent_runnable = create_react_agent(llm, [get_weather], prompt)
 
 agent = AgentExecutor(
     agent=agent_runnable,
     tools=[get_weather],
-    verbose=True,                 # prints internal chain steps to console
-    handle_parsing_errors=True,   # retry on bad-format output
-    max_iterations=3
+    verbose=True,  # <- prints every step automatically
+    handle_parsing_errors=True,
+    max_iterations=3,
 )
 
-# ───────────────────── 3.  FASTAPI SERVICE ───────────────────────────────
-app = FastAPI(title="Ollama-ReAct gateway")
+# ───────────── 3.  FASTAPI SERVICE ──────────────────────────────────────
+app = FastAPI(title="Ollama-ReAct gateway (console-first)")
 
-def _format_openai_response(answer: str) -> Dict[str, Any]:
-    """Wrap text in OpenAI-style JSON structure expected by LibreChat."""
+def wrap_openai(answer: str) -> Dict[str, Any]:
     return {
         "id": f"chatcmpl-{uuid.uuid4()}",
         "object": "chat.completion",
         "model": OLLAMA_MODEL,
         "choices": [{
             "index": 0,
-            "message": { "role": "assistant", "content": answer },
-            "finish_reason": "stop"
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop",
         }],
-        "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
-def run_agent(user_input: str) -> str:
-    """
-    Invoke the agent with retries; fall back to raw LLM reply
-    if parsing still fails after AgentExecutor’s automatic retries.
-    """
+def run_agent(user_prompt: str) -> str:
+    """Run agent; fallback to raw LLM if it refuses or crashes."""
     try:
-        out = agent.invoke({"input": user_input})
-        return out["output"] if isinstance(out, dict) else str(out)
+        result = agent.invoke(
+            {"input": user_prompt},
+            callbacks=[StreamingStdOutCallbackHandler()],   # <- live prints
+        )
+        text = result["output"] if isinstance(result, dict) else str(result)
+
+        if any(k in text.lower() for k in ("unable to answer", "cannot")):
+            root_log.info("Agent declined – retrying with direct LLM")
+            text = llm.invoke(user_prompt).content
+        return text
+
     except Exception as e:
-        logger.exception("❌ Agent failed – falling back to raw LLM. Reason: %s", e)
-        raw = llm.invoke(user_input)
+        root_log.exception("Agent error, using raw LLM instead: %s", e)
         return (
-            "⚠️ _Agent formatting failed – showing raw LLM reply_\n\n"
-            + (getattr(raw, "content", str(raw)))
+            "⚠️ _Agent failed – showing raw LLM reply_\n\n"
+            + llm.invoke(user_prompt).content
         )
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: Request):
+async def chat(req: Request):
     body = await req.json()
-    msgs: List[Dict[str, str]] = body.get("messages", [])
-    if not msgs:
+    root_log.info("📥 Incoming body: %s", json.dumps(body, indent=2)[:1000])
+
+    messages: List[Dict[str, str]] = body.get("messages", [])
+    if not messages:
         raise HTTPException(400, "Missing 'messages' array")
 
-    # LibreChat sends the whole convo; grab the newest user turn
-    user_input = next((m["content"] for m in reversed(msgs) if m["role"] == "user"), "")
-    if not user_input:
-        raise HTTPException(400, "No user message found")
+    user_prompt = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+    if not user_prompt:
+        raise HTTPException(400, "No user message")
 
     stream = bool(body.get("stream", False))
+    answer_text = await asyncio.get_event_loop().run_in_executor(None, lambda: run_agent(user_prompt))
 
     if not stream:
-        answer_text = run_agent(user_input)
-        return JSONResponse(_format_openai_response(answer_text))
+        return JSONResponse(wrap_openai(answer_text))
 
-    # ───── streaming branch (Server-Sent Events) ──────────────────────
+    # simple SSE stream (final answer only)
     async def event_stream():
-        txt = run_agent(user_input)
-        for token in txt.split():
+        for token in answer_text.split():
             chunk = {
                 "id": None,
                 "object": "chat.completion.chunk",
                 "model": OLLAMA_MODEL,
                 "choices": [{
                     "index": 0,
-                    "delta": { "content": token + " " },
-                    "finish_reason": None
-                }]
+                    "delta": {"content": token + " "},
+                    "finish_reason": None,
+                }],
             }
             yield f"data: {json.dumps(chunk)}\n\n"
             await asyncio.sleep(0)
 
-        # final stop chunk
         yield (
             "data: "
             + json.dumps({
@@ -119,8 +130,8 @@ async def chat_completions(req: Request):
                 "choices": [{
                     "index": 0,
                     "delta": {},
-                    "finish_reason": "stop"
-                }]
+                    "finish_reason": "stop",
+                }],
             })
             + "\n\n"
         )
@@ -131,3 +142,16 @@ async def chat_completions(req: Request):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# === Model-list endpoint for LibreChat ===
+@app.get("/v1/models")
+def list_models():
+    """
+    Minimal OpenAI-compatible model list.
+    LibreChat calls this when `fetch: true`.
+    """
+    models = [
+        {"id": "openchat", "object": "model", "owned_by": "local"},
+        {"id": "mistral",  "object": "model", "owned_by": "local"},
+    ]
+    return {"object": "list", "data": models}
