@@ -26,5 +26,4 @@ endpoints:
       summarize: false
       summaryModel: "LangGraph OpenChat base agent test"
       forcePrompt: false
-      stream: false
       modelDisplayLabel: "LangGraph"
