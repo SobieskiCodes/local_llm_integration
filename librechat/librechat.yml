@@ -15,7 +15,7 @@ endpoints:
       forcePrompt: false
       modelDisplayLabel: "Ollama"
 
-    - name: "LangGraph Proxy"
+    - name: "LangGraph OpenChat"
       apiKey: "proxy"  # dummy value
       baseURL: "http://langchain:8082/v1"
       models:
@@ -25,5 +25,18 @@ endpoints:
       titleModel: "LangGraph OpenChat"
       summarize: false
       summaryModel: "LangGraph OpenChat base agent test"
+      forcePrompt: false
+      modelDisplayLabel: "LangGraph"
+
+    - name: "LangGraph Mistral"
+      apiKey: "proxy"  # dummy value
+      baseURL: "http://langchain:8082/v1"
+      models:
+        default: ["mistral"]
+        fetch: false
+      titleConvo: true
+      titleModel: "LangGraph Mistral"
+      summarize: false
+      summaryModel: "LangGraph Mistral base agent test"
       forcePrompt: false
       modelDisplayLabel: "LangGraph"
