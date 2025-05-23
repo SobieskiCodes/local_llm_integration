@@ -4,3 +4,8 @@ langchain-community
 langchain
 requests
 openai
+langgraph>=0.0.40
+crewai>=0.28.0
+crewai-tools
+asyncio
+python-dotenv

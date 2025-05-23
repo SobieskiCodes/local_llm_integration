@@ -16,8 +16,8 @@ services:
     image: qdrant/qdrant
     container_name: qdrant
     ports:
-      - "6333:6333" # REST API
-      - "6334:6334" # gRPC (optional)
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
@@ -37,23 +37,6 @@ services:
       - ollama
     restart: unless-stopped
 
-  # bolt:
-  #   build:
-  #     context: ./bolt
-  #     dockerfile: Dockerfile
-  #     target: bolt-ai-development
-  #   container_name: bolt
-  #   working_dir: /app
-  #   volumes:
-  #     - shared_app:/app
-  #   ports:
-  #     - "5173:5173"
-  #   profiles:
-  #     - development
-  #   environment:
-  #     - HOST=0.0.0.0
-  #   restart: unless-stopped
-
   llamaindex:
     build:
       context: ./llamaindex
@@ -61,7 +44,7 @@ services:
     container_name: llamaindex
     working_dir: /app
     volumes:
-      - ./llamaindex:/app  # ✅ contains main.py and is your real project source
+      - ./llamaindex:/app
     ports:
       - "8081:8081"
     environment:
@@ -83,7 +66,6 @@ services:
       - llamaindex
       - ollama
     restart: unless-stopped
-
 
 volumes:
   ollama:
