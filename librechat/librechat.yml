@@ -1,13 +1,30 @@
-custom:
-  - name: "Ollama"
-    apiKey: "ollama"
-    baseURL: "http://host.docker.internal:11434/v1/"
-    models:
-      default: ["mistral"]
-      fetch: false  # disables auto-fetching models from Ollama
-    titleConvo: true
-    titleModel: "current_model"
-    summarize: false
-    summaryModel: "current_model"
-    forcePrompt: false
-    modelDisplayLabel: "Ollama"
+version: 1.0.8
+
+endpoints:
+  custom:
+    - name: "Ollama"
+      apiKey: "ollama"  # dummy value; LibreChat requires it
+      baseURL: "http://ollama:11434/v1"
+      models:
+        default: ["mistral"]
+        fetch: true
+      titleConvo: true
+      titleModel: "mistral"
+      summarize: false
+      summaryModel: "mistral"
+      forcePrompt: false
+      modelDisplayLabel: "Ollama"
+
+    - name: "LangGraph Proxy"
+      apiKey: "proxy"  # dummy value
+      baseURL: "http://langchain:8082/v1"
+      models:
+        default: ["openchat"]
+        fetch: false
+      titleConvo: true
+      titleModel: "LangGraph OpenChat"
+      summarize: false
+      summaryModel: "LangGraph OpenChat base agent test"
+      forcePrompt: false
+      stream: false
+      modelDisplayLabel: "LangGraph"
