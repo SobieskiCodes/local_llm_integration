@@ -5,7 +5,6 @@ Console-first edition: full live chain output
 
 import os, asyncio, json, uuid, logging
 from typing import List, Dict, Any
-
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -14,10 +13,11 @@ from langchain.agents.react.agent import create_react_agent
 from langchain.agents import AgentExecutor
 from langchain_core.tools import tool
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
-
+from langchain.callbacks.base import BaseCallbackHandler
 from langchain import hub
 
 # ───────────── 0.  ENV & LOGGING ────────────────────────────────────────
+# Make sure the container runs with PYTHONUNBUFFERED=1 or `python -u`
 os.environ["LANGCHAIN_TRACING_V2"] = "false"   # silence LangSmith banner
 
 logging.basicConfig(
@@ -27,13 +27,31 @@ logging.basicConfig(
 root_log = logging.getLogger()
 root_log.setLevel(logging.INFO)
 
-# ───────────── 1.  TOOL EXAMPLE ─────────────────────────────────────────
+# ───────────── 1.  CONSOLE TRACE CALLBACK ───────────────────────────────
+class AgentTrace(BaseCallbackHandler):
+    """Log each reasoning step immediately."""
+    def _log(self, msg: str):
+        root_log.info(msg)
+
+    def on_agent_action(self, action, **_):
+        self._log(f"🤖 ACTION   → {action.tool} | input={action.tool_input}")
+
+    def on_tool_start(self, *, tool, **_):
+        self._log(f"🔧   → running tool '{tool}'")
+
+    def on_tool_end(self, output, **_):
+        self._log(f"🔧   ← tool result: {str(output)[:200]}")
+
+    def on_agent_finish(self, finish, **_):
+        self._log(f"🏁 FINISH    : {finish.return_values}")
+
+# ───────────── 2.  TOOL EXAMPLE ─────────────────────────────────────────
 @tool
 def get_weather(location: str) -> str:
     """Return a (fake) weather report for the given location."""
     return f"It's always sunny in {location}."
 
-# ───────────── 2.  MODEL & AGENT SETUP ──────────────────────────────────
+# ───────────── 3.  MODEL & AGENT SETUP ──────────────────────────────────
 OLLAMA_BASE  = "http://ollama:11434"
 OLLAMA_MODEL = "openchat"          # change to openchat:7b-v3.5 etc.
 
@@ -45,12 +63,12 @@ agent_runnable = create_react_agent(llm, [get_weather], prompt)
 agent = AgentExecutor(
     agent=agent_runnable,
     tools=[get_weather],
-    verbose=True,  # <- prints every step automatically
+    verbose=True,
     handle_parsing_errors=True,
     max_iterations=3,
 )
 
-# ───────────── 3.  FASTAPI SERVICE ──────────────────────────────────────
+# ───────────── 4.  FASTAPI SERVICE ──────────────────────────────────────
 app = FastAPI(title="Ollama-ReAct gateway (console-first)")
 
 def wrap_openai(answer: str) -> Dict[str, Any]:
@@ -71,7 +89,7 @@ def run_agent(user_prompt: str) -> str:
     try:
         result = agent.invoke(
             {"input": user_prompt},
-            callbacks=[StreamingStdOutCallbackHandler()],   # <- live prints
+            callbacks=[AgentTrace(), StreamingStdOutCallbackHandler()],
         )
         text = result["output"] if isinstance(result, dict) else str(result)
 
@@ -101,7 +119,9 @@ async def chat(req: Request):
         raise HTTPException(400, "No user message")
 
     stream = bool(body.get("stream", False))
-    answer_text = await asyncio.get_event_loop().run_in_executor(None, lambda: run_agent(user_prompt))
+    answer_text = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: run_agent(user_prompt)
+    )
 
     if not stream:
         return JSONResponse(wrap_openai(answer_text))
@@ -122,20 +142,16 @@ async def chat(req: Request):
             yield f"data: {json.dumps(chunk)}\n\n"
             await asyncio.sleep(0)
 
-        yield (
-            "data: "
-            + json.dumps({
-                "id": None,
-                "object": "chat.completion.chunk",
-                "model": OLLAMA_MODEL,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop",
-                }],
-            })
-            + "\n\n"
-        )
+        yield "data: " + json.dumps({
+            "id": None,
+            "object": "chat.completion.chunk",
+            "model": OLLAMA_MODEL,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }],
+        }) + "\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -147,10 +163,7 @@ def health():
 # === Model-list endpoint for LibreChat ===
 @app.get("/v1/models")
 def list_models():
-    """
-    Minimal OpenAI-compatible model list.
-    LibreChat calls this when `fetch: true`.
-    """
+    """Minimal OpenAI-compatible model list (LibreChat uses this)."""
     models = [
         {"id": "openchat", "object": "model", "owned_by": "local"},
         {"id": "mistral",  "object": "model", "owned_by": "local"},
